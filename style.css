@@ -1,0 +1,80 @@
+/* SCRAP HEAP UI — Junkyard aesthetic, CodePen safe */
+:root{
+  --bg:#1b1b1b;
+  --panel:#232629;
+  --panel2:#2c3136;
+  --ink:#e4e6e7;
+  --muted:#8b949e;
+  --accent:#f4c542;      /* hazard yellow */
+  --accent2:#f08c2e;     /* rust orange */
+  --danger:#b84a4a;
+  --good:#3abf7a;
+}
+
+body{ margin:0; background:var(--bg); color:var(--ink); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial; }
+
+.scrap-shell{ width:min(1100px,96vw); margin:16px auto; background:linear-gradient(#222,#1e1e1e 60%, #191919);
+  border:3px solid #000; box-shadow: 0 12px 40px #0008, inset 0 0 0 2px #000; }
+
+.titlebar{ display:flex; justify-content:space-between; align-items:center; padding:10px 12px;
+  background:
+    repeating-linear-gradient( -45deg, #383b3f 0 16px, #2c2f33 16px 32px),
+    linear-gradient(#383c41,#1f2226);
+  border-bottom:2px solid #000; }
+.brand{ font-weight:800; letter-spacing:.5px; text-transform:uppercase; }
+.brand em{ font-style:normal; color:var(--accent); }
+.tb-btn{ margin-left:6px; font-weight:700; background:#2a2e33; color:#eaecef; border:2px solid #0d0f12; padding:6px 10px; cursor:pointer; border-radius:4px; }
+.tb-btn:hover{ filter:brightness(1.1); }
+.tb-btn:disabled{ opacity:.5; cursor:not-allowed; }
+.tb-btn.danger{ background:#5a2222; border-color:#2a0f0f; }
+
+.layout{ display:grid; grid-template-columns: 280px 1fr; min-height:72vh; }
+
+/* Sidebar */
+.sidebar{ background:
+  radial-gradient(1200px 300px at -20% 0%, #353a3f, #24282c),
+  url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22><path d=%22M0 8h16M8 0v16%22 stroke=%22%23393d42%22 stroke-width=%221%22 opacity=%220.35%22/></svg>') top left/16px 16px repeat;
+  border-right:2px solid #000; padding:10px; }
+.side-section{ background:linear-gradient(#2a2f34,#22272b); border:1px solid #0b0c0d; padding:10px; margin-bottom:10px; box-shadow: inset 0 0 0 1px #3b4046; }
+.side-section h4{ margin:0 0 8px 0; color:var(--accent); text-shadow:0 1px 0 #000; }
+.side-btn{ width:100%; margin:6px 0; padding:8px 10px; background:#30353a; color:#e9ecef; border:1px solid #0c0e10; border-radius:4px; cursor:pointer; }
+.side-btn.primary{ background:linear-gradient(#40464c,#2f353c); box-shadow:0 0 0 1px #596068 inset; }
+.hint{ font-size:12px; color:var(--muted); margin-top:6px; }
+
+.meter-wrap{ margin:8px 0; }
+.meter-top{ display:flex; justify-content:space-between; font-size:12px; color:var(--muted); }
+.meter-outer{ height:10px; border:1px solid #0c0e10; background:#0f1114; box-shadow: inset 0 0 6px #000 inset; }
+.meter-inner{ height:100%; width:0%; background:linear-gradient(90deg, #3a9c5a, #73e0a5); }
+
+.pad-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin:8px 0; }
+.pad{ padding:8px 0; background:#2a2f34; border:1px solid #0b0c0d; text-align:center; font-weight:800; letter-spacing:.5px; cursor:pointer; border-radius:4px;
+  box-shadow: inset 0 0 0 1px #434a52; }
+.pad.active{ background:linear-gradient(90deg, #3a9c5a, #2e6a40); }
+
+/* Desk */
+.desk{ padding:12px; background:
+  linear-gradient(#1d2024,#17191c);
+}
+.toolbar{ display:flex; flex-wrap:wrap; gap:14px; background:#1f2428; border:1px solid #0b0c0d; padding:10px; box-shadow: inset 0 0 0 1px #3c4249; }
+.toolbar-group{ display:flex; align-items:center; gap:8px; }
+.toolbar-group label{ display:flex; align-items:center; gap:8px; font-size:13px; }
+.toolbar input[type=range]{ width:140px; }
+
+.channel-grid{ display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:14px; margin-top:12px; }
+.card{ background:linear-gradient(#23272b,#1d2125); border:1px solid #0c0e10; padding:10px; box-shadow: inset 0 0 0 1px #3b4148; }
+.ch h3{ margin:0 0 6px 0; color:var(--accent2); text-shadow:0 1px 0 #000; }
+.row{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin:8px 0; }
+.row input[type=range]{ width:180px; }
+.stretch label{ display:flex; align-items:center; gap:8px; }
+.mini{ font-size:12px; color:var(--muted); }
+.nowplaying{ color:#cfe3ff; }
+
+.status .status-top{ display:flex; justify-content:space-between; align-items:center; }
+.date{ color:#9fb3c8; font-variant-numeric: tabular-nums; }
+
+button:disabled{ opacity:.6; cursor:not-allowed; }
+#libState.ready{ color:var(--good); font-weight:700; }
+
+/* Decorative: hazard strip headers */
+.card::before{ content:''; display:block; height:6px; margin:-10px -10px 8px; background:
+  repeating-linear-gradient( -45deg, var(--accent) 0 12px, #000 12px 24px ); opacity:.35; }
