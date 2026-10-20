@@ -406,10 +406,13 @@ setInterval(tickClock, 1000); tickClock();
 
 // ---------- Audio Engine ----------
 let audioCtx = null;
-let masterGain, reverbConvolver, reverbGain;
+let masterGain, limiter, reverbConvolver, reverbGain, dryGain;
 let libraryBuffers = [];
 let armed = false;
 let running = false;
+
+const NUM_CHANNELS = 4;
+const CHANNEL_HEADROOM = 1 / Math.sqrt(NUM_CHANNELS);
 
 const fromSemitones = st => Math.pow(2, st/12);
 const clamp = (v,min,max)=> Math.min(max, Math.max(min,v));
@@ -427,7 +430,6 @@ function updateSliceModeHint(){
   }
 }
 
-// Procedural impulse response
 function makeImpulseResponse(ctx, seconds=2.5, decay=2.0){
   const rate = ctx.sampleRate;
   const length = Math.floor(seconds*rate);
@@ -444,20 +446,34 @@ function makeImpulseResponse(ctx, seconds=2.5, decay=2.0){
 function initAudio(){
   if (audioCtx) return;
   audioCtx = new (window.AudioContext||window.webkitAudioContext)();
-  masterGain = audioCtx.createGain();
-  reverbConvolver = audioCtx.createConvolver();
-  reverbGain = audioCtx.createGain();
 
-  reverbConvolver.buffer = makeImpulseResponse(audioCtx, 2.6, 2.4);
-  reverbGain.gain.value = +reverbMix.value;
+  masterGain = audioCtx.createGain();
   masterGain.gain.value = +masterVol.value;
 
-  const dry = audioCtx.createGain(); dry.gain.value = 1.0;
-  dry.connect(masterGain);
-  reverbGain.connect(masterGain);
-  masterGain.connect(audioCtx.destination);
+  limiter = audioCtx.createDynamicsCompressor();
+  limiter.threshold.value = -1.0;
+  limiter.knee.value = 0.0;
+  limiter.ratio.value = 20.0;
+  limiter.attack.value = 0.001;
+  limiter.release.value = 0.05;
 
-  engine.buses = { dry, reverb: { node: reverbConvolver, gain: reverbGain } };
+  reverbConvolver = audioCtx.createConvolver();
+  reverbConvolver.buffer = makeImpulseResponse(audioCtx, 2.6, 2.4);
+
+  reverbGain = audioCtx.createGain();
+  reverbGain.gain.value = +reverbMix.value;
+
+  dryGain = audioCtx.createGain();
+  dryGain.gain.value = 1.0;
+
+  // Signal chain: voices → channel gains → {dry, reverbSend} → {dryGain, convolver→reverbGain} → masterGain → limiter → destination
+  dryGain.connect(masterGain);
+  reverbConvolver.connect(reverbGain);
+  reverbGain.connect(masterGain);
+  masterGain.connect(limiter);
+  limiter.connect(audioCtx.destination);
+
+  engine.buses = { dry: dryGain, reverbSend: reverbConvolver };
 }
 
 // ---------- Library Preload ----------
@@ -496,9 +512,9 @@ async function preloadLibrary(urls){
 // ---------- Channel Engine ----------
 const engine = { buses:null, channels:[], allVoices:new Set() };
 function pickRandomBuffer(){
-  let item = libraryBuffers[Math.floor(Math.random()*libraryBuffers.length)];
-  while(!item) item = libraryBuffers[Math.floor(Math.random()*libraryBuffers.length)];
-  return item;
+  const valid = libraryBuffers.filter(Boolean);
+  if (!valid.length) return null;
+  return valid[Math.floor(Math.random()*valid.length)];
 }
 function randomSlice(buffer, minSec, maxSec){
   const len = buffer.duration;
@@ -524,29 +540,39 @@ function createVoice(ch, item, pitchSt, fadeTimeMs, minSec, maxSec, vol){
   const ctx = audioCtx;
   const { buffer, url } = item;
   const { start, dur } = randomSlice(buffer, minSec, maxSec);
-  const src = ctx.createBufferSource(); src.buffer = buffer; src.playbackRate.value = fromSemitones(pitchSt);
-  const gain = ctx.createGain();
-  const reverbSend = ctx.createGain(); reverbSend.gain.value = 0.35;
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.playbackRate.value = fromSemitones(pitchSt);
+
+  const voiceEnv = ctx.createGain();
+  const reverbSend = ctx.createGain();
+  reverbSend.gain.value = 0.35;
 
   const now = ctx.currentTime;
-  const fade = Math.max(0.01, fadeTimeMs/1000);
+  const fade = Math.min(Math.max(0.005, fadeTimeMs/1000), dur * 0.5);
   const end = now + dur;
-  gain.gain.setValueAtTime(0, now);
-  gain.gain.linearRampToValueAtTime(vol, now + fade);
-  gain.gain.setValueAtTime(vol, end - fade);
-  gain.gain.linearRampToValueAtTime(0, end);
 
-  src.connect(gain);
-  gain.connect(engine.buses.dry);
-  gain.connect(reverbSend);
-  reverbSend.connect(engine.buses.reverb.node);
-  engine.buses.reverb.node.connect(engine.buses.reverb.gain);
+  // Equal-power fade-in/out using exponential ramps for smooth crossfade
+  voiceEnv.gain.setValueAtTime(0.0001, now);
+  voiceEnv.gain.exponentialRampToValueAtTime(vol, now + fade);
+  if (dur > fade * 2) {
+    voiceEnv.gain.setValueAtTime(vol, end - fade);
+  }
+  voiceEnv.gain.exponentialRampToValueAtTime(0.0001, end);
+
+  src.connect(voiceEnv);
+  voiceEnv.connect(ch.channelGain);
+  voiceEnv.connect(reverbSend);
+  reverbSend.connect(engine.buses.reverbSend);
 
   src.start(now, start, dur);
   src.stop(end + 0.02);
 
-  const voice = { src, gain, url, stopAt: end + 0.1 };
-  src.onended = () => engine.allVoices.delete(voice);
+  const voice = { src, gain: voiceEnv, url, stopAt: end + 0.1 };
+  src.onended = () => {
+    engine.allVoices.delete(voice);
+    try { voiceEnv.disconnect(); reverbSend.disconnect(); } catch(e){}
+  };
   engine.allVoices.add(voice);
   const nowPlaying = $('.nowplaying', ch.card);
   if (nowPlaying) nowPlaying.textContent = decodeURIComponent(url.split('/').pop());
@@ -559,12 +585,14 @@ function createGranularVoice(ch, item, pitchSt, fadeTimeMs, minSec, maxSec, vol)
   const { start: sliceStart, dur: sliceDurSrc } = randomSlice(buffer, minSec, maxSec);
   const pitchRate = Math.pow(2, pitchSt/12);
 
-  const voiceGain = ctx.createGain(); voiceGain.gain.value = 0;
-  const reverbSend = ctx.createGain(); reverbSend.gain.value = 0.35;
-  voiceGain.connect(engine.buses.dry);
+  const voiceGain = ctx.createGain();
+  voiceGain.gain.value = 0;
+  const reverbSend = ctx.createGain();
+  reverbSend.gain.value = 0.35;
+
+  voiceGain.connect(ch.channelGain);
   voiceGain.connect(reverbSend);
-  reverbSend.connect(engine.buses.reverb.node);
-  engine.buses.reverb.node.connect(engine.buses.reverb.gain);
+  reverbSend.connect(engine.buses.reverbSend);
 
   const grainSize = Math.max(0.02, (+grainMs.value)/1000);
   const ov = Math.min(0.95, Math.max(0, +overlap.value));
@@ -574,27 +602,38 @@ function createGranularVoice(ch, item, pitchSt, fadeTimeMs, minSec, maxSec, vol)
   const totalOut = sliceDurSrc * stretch;
 
   const now = ctx.currentTime;
-  const fade = Math.max(0.01, fadeTimeMs/1000);
+  const fade = Math.min(Math.max(0.005, fadeTimeMs/1000), totalOut * 0.5);
   const t0 = now;
 
-  voiceGain.gain.setValueAtTime(0, t0);
-  voiceGain.gain.linearRampToValueAtTime(vol, t0 + fade);
-  voiceGain.gain.setValueAtTime(vol, t0 + Math.max(0, totalOut - fade));
-  voiceGain.gain.linearRampToValueAtTime(0, t0 + totalOut);
+  // Equal-power envelope for the overall granular voice
+  voiceGain.gain.setValueAtTime(0.0001, t0);
+  voiceGain.gain.exponentialRampToValueAtTime(vol, t0 + fade);
+  if (totalOut > fade * 2) {
+    voiceGain.gain.setValueAtTime(vol, t0 + totalOut - fade);
+  }
+  voiceGain.gain.exponentialRampToValueAtTime(0.0001, t0 + totalOut);
 
   const N = Math.max(1, Math.ceil(totalOut / Math.max(0.005, period)));
   let readPos = sliceStart;
   const readEnd = Math.min(buffer.duration, sliceStart + sliceDurSrc);
+  const grainSources = [];
 
   for (let i=0;i<N;i++){
     const startTime = t0 + i * period;
-    const src = ctx.createBufferSource(); src.buffer = buffer; src.playbackRate.value = pitchRate;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.playbackRate.value = pitchRate;
     const g = ctx.createGain();
-    g.gain.setValueAtTime(0, startTime);
-    g.gain.linearRampToValueAtTime(1, startTime + Math.min(grainSize*0.5, 0.02));
-    g.gain.setValueAtTime(1, startTime + Math.max(0, grainSize - Math.min(grainSize*0.5, 0.02)));
-    g.gain.linearRampToValueAtTime(0, startTime + grainSize);
-    src.connect(g); g.connect(voiceGain);
+
+    // Hann window grain envelope for seamless overlap
+    const halfGrain = grainSize * 0.5;
+    g.gain.setValueAtTime(0.0001, startTime);
+    g.gain.exponentialRampToValueAtTime(1, startTime + halfGrain);
+    g.gain.exponentialRampToValueAtTime(0.0001, startTime + grainSize);
+
+    src.connect(g);
+    g.connect(voiceGain);
+    grainSources.push(src);
 
     const maxReadable = Math.max(0, readEnd - readPos);
     const playDur = Math.min(grainSize, maxReadable);
@@ -603,11 +642,14 @@ function createGranularVoice(ch, item, pitchSt, fadeTimeMs, minSec, maxSec, vol)
     readPos += period / Math.max(0.001, stretch);
   }
 
-  const voice = { url, stopAt: t0 + totalOut + 0.05, node: voiceGain };
+  const voice = { url, stopAt: t0 + totalOut + 0.05, node: voiceGain, grainSources };
   engine.allVoices.add(voice);
   const nowPlaying = $('.nowplaying', ch.card);
   if (nowPlaying) nowPlaying.textContent = decodeURIComponent(url.split('/').pop());
-  const endTimer = setTimeout(()=>{ try{ voiceGain.disconnect(); }catch(e){} engine.allVoices.delete(voice); }, Math.ceil((totalOut+0.1)*1000));
+  const endTimer = setTimeout(()=>{
+    try { voiceGain.disconnect(); reverbSend.disconnect(); } catch(e){}
+    engine.allVoices.delete(voice);
+  }, Math.ceil((totalOut+0.1)*1000));
   voice._endTimer = endTimer;
   return voice;
 }
@@ -625,6 +667,10 @@ function Channel(index){
   const muteBtn  = $('.ch-mute', card);
   const nextBtn  = $('.ch-next', card);
 
+  const channelGain = audioCtx.createGain();
+  channelGain.gain.value = CHANNEL_HEADROOM;
+  channelGain.connect(engine.buses.dry);
+
   const state = {
     enabled: enableEl.checked,
     muted: false,
@@ -638,15 +684,24 @@ function Channel(index){
     card
   };
 
+  function updateChannelGain(){
+    const anySolo = engine.channels.some(c=>c.state.solo);
+    const audible = state.muted ? false : (anySolo ? state.solo : true);
+    const target = audible ? CHANNEL_HEADROOM : 0.0001;
+    channelGain.gain.cancelScheduledValues(audioCtx.currentTime);
+    channelGain.gain.setTargetAtTime(target, audioCtx.currentTime, 0.015);
+  }
+
   function scheduleNext(immediate=false){
     if (!running || !armed || !state.enabled) return;
     const dens = clamp((+globalDensity.value + state.density)/2, 0, 1);
     const minS = +sliceMin.value;
     const maxS = Math.max(minS+0.1, +sliceMax.value);
     const fade = +fadeMs.value;
-    const vol  = state.muted ? 0 : state.vol;
+    const vol  = state.vol;
     const playNow = () => {
       const item = pickRandomBuffer();
+      if (!item) return;
       if (state.stretchEnabled && (grainMs && overlap)) {
         createGranularVoice(api, item, state.pitch, fade, minS, maxS, vol);
       } else {
@@ -671,16 +726,19 @@ function Channel(index){
   if (stretchEl) stretchEl.addEventListener('input', e => { state.stretch = (+e.target.value)/100; if (stretchValEl) stretchValEl.textContent = Math.round(+e.target.value); });
 
   const api = {
-    index, card, state,
+    index, card, state, channelGain,
     start(){ clearTimer(); scheduleNext(true); scheduleNext(false); },
     stop(){ clearTimer(); },
     setEnabled(v){ state.enabled=v; if (running && armed && v){ scheduleNext(true); scheduleNext(false);} },
-    setVol(v){ state.vol=v; }, setPitch(v){ state.pitch=v; }, setDensity(v){ state.density=v; },
+    setVol(v){ state.vol=v; },
+    setPitch(v){ state.pitch=v; },
+    setDensity(v){ state.density=v; },
     soloOn(){ state.solo=true; muteBtn.disabled=true; applySoloMute(); },
     soloOff(){ state.solo=false; muteBtn.disabled=false; applySoloMute(); },
     muteOn(){ state.muted=true; applySoloMute(); },
     muteOff(){ state.muted=false; applySoloMute(); },
-    nextNow(){ scheduleNext(true); }
+    nextNow(){ scheduleNext(true); },
+    updateChannelGain
   };
 
   enableEl.addEventListener('change', e=>api.setEnabled(e.target.checked));
@@ -696,7 +754,10 @@ function Channel(index){
 
 function applySoloMute(){
   const anySolo = engine.channels.some(c=>c.state.solo);
-  engine.channels.forEach(ch => { ch.card.style.opacity = anySolo ? (ch.state.solo ? '1' : '0.6') : '1'; });
+  engine.channels.forEach(ch => {
+    ch.card.style.opacity = anySolo ? (ch.state.solo ? '1' : '0.6') : '1';
+    ch.updateChannelGain();
+  });
 }
 
 // ---------- Transport ----------
@@ -715,7 +776,15 @@ function stopEngine(){
   engine.channels.forEach(ch => ch.stop());
 }
 function panic(){
-  engine.allVoices.forEach(v => { try{ v.src ? v.src.stop(0) : 0; }catch(e){} });
+  engine.allVoices.forEach(v => {
+    try {
+      if (v.src) v.src.stop(0);
+      if (v.grainSources) v.grainSources.forEach(s => { try{ s.stop(0); }catch(e){} });
+      if (v.node) v.node.disconnect();
+      if (v.gain) v.gain.disconnect();
+      if (v._endTimer) clearTimeout(v._endTimer);
+    } catch(e){}
+  });
   engine.allVoices.clear();
   statusEl.textContent = 'Panic: All voices silenced.';
 }
@@ -738,8 +807,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   applySliceUi();
 
   for (let i=0;i<4;i++){ engine.channels.push(Channel(i)); }
-  masterVol.addEventListener('input', e=>{ if(masterGain) masterGain.gain.value = +e.target.value; });
-  reverbMix.addEventListener('input', e=>{ if(reverbGain) reverbGain.gain.value = +e.target.value; });
+  masterVol.addEventListener('input', e=>{
+    if(masterGain) masterGain.gain.cancelScheduledValues(audioCtx.currentTime);
+    if(masterGain) masterGain.gain.setTargetAtTime(+e.target.value, audioCtx.currentTime, 0.015);
+  });
+  reverbMix.addEventListener('input', e=>{
+    if(reverbGain) reverbGain.gain.cancelScheduledValues(audioCtx.currentTime);
+    if(reverbGain) reverbGain.gain.setTargetAtTime(+e.target.value, audioCtx.currentTime, 0.015);
+  });
 
   btnStart.addEventListener('click', startEngine);
   btnStop.addEventListener('click', stopEngine);
