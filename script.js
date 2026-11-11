@@ -411,6 +411,130 @@ let libraryBuffers = [];
 let armed = false;
 let running = false;
 
+// ---------- 24-bit WAV Recorder ----------
+let recorderNode = null;
+let recordChunksL = [];
+let recordChunksR = [];
+let isRecording = false;
+let recStartTime = 0;
+let recTimerHandle = null;
+const btnRec     = byId('btnRec');
+const btnRecStop = byId('btnRecStop');
+const recTime    = byId('recTime');
+const recIndicator = byId('recIndicator');
+
+function startRecording(){
+  if (!audioCtx || isRecording) return;
+  recordChunksL = [];
+  recordChunksR = [];
+
+  recorderNode = audioCtx.createScriptProcessor(4096, 2, 2);
+  recorderNode.onaudioprocess = (e) => {
+    if (!isRecording) return;
+    recordChunksL.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    recordChunksR.push(new Float32Array(e.inputBuffer.getChannelData(1)));
+  };
+  limiter.connect(recorderNode);
+  recorderNode.connect(audioCtx.destination);
+
+  isRecording = true;
+  recStartTime = performance.now();
+  btnRec.disabled = true;
+  btnRecStop.disabled = false;
+  if (recIndicator) recIndicator.classList.add('active');
+  statusEl.textContent = 'Recording…';
+
+  recTimerHandle = setInterval(()=>{
+    const elapsed = (performance.now() - recStartTime) / 1000;
+    const m = Math.floor(elapsed / 60);
+    const s = Math.floor(elapsed % 60);
+    recTime.textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }, 250);
+}
+
+function stopRecording(){
+  if (!isRecording) return;
+  isRecording = false;
+  clearInterval(recTimerHandle);
+
+  try { recorderNode.disconnect(); limiter.disconnect(recorderNode); } catch(e){}
+  recorderNode = null;
+
+  btnRec.disabled = false;
+  btnRecStop.disabled = true;
+  if (recIndicator) recIndicator.classList.remove('active');
+  statusEl.textContent = 'Encoding 24-bit WAV…';
+
+  setTimeout(()=>{
+    const wav = encodeWav24(recordChunksL, recordChunksR, audioCtx.sampleRate);
+    recordChunksL = [];
+    recordChunksR = [];
+    const blob = new Blob([wav], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+    a.href = url;
+    a.download = `ScrapHeap_${ts}.wav`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=> URL.revokeObjectURL(url), 10000);
+    statusEl.textContent = `Saved ${a.download}`;
+    recTime.textContent = '00:00';
+  }, 50);
+}
+
+function encodeWav24(chunksL, chunksR, sampleRate){
+  const numChannels = 2;
+  const bitsPerSample = 24;
+  const bytesPerSample = 3;
+  let totalSamples = 0;
+  for (let i = 0; i < chunksL.length; i++) totalSamples += chunksL[i].length;
+
+  const dataBytes = totalSamples * numChannels * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+
+  function writeString(offset, str){
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  }
+  function write24(offset, val){
+    const clamped = Math.max(-8388608, Math.min(8388607, val));
+    const unsigned = clamped < 0 ? clamped + 16777216 : clamped;
+    view.setUint8(offset,     unsigned & 0xFF);
+    view.setUint8(offset + 1, (unsigned >> 8) & 0xFF);
+    view.setUint8(offset + 2, (unsigned >> 16) & 0xFF);
+  }
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + dataBytes, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * numChannels * bytesPerSample, true);
+  view.setUint16(32, numChannels * bytesPerSample, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeString(36, 'data');
+  view.setUint32(40, dataBytes, true);
+
+  const SCALE = 8388607;
+  let offset = 44;
+  for (let c = 0; c < chunksL.length; c++){
+    const L = chunksL[c];
+    const R = chunksR[c];
+    for (let i = 0; i < L.length; i++){
+      write24(offset, Math.round(L[i] * SCALE));
+      offset += 3;
+      write24(offset, Math.round(R[i] * SCALE));
+      offset += 3;
+    }
+  }
+  return buffer;
+}
+
 const NUM_CHANNELS = 4;
 const CHANNEL_HEADROOM = 1 / Math.sqrt(NUM_CHANNELS);
 
@@ -819,6 +943,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   btnStart.addEventListener('click', startEngine);
   btnStop.addEventListener('click', stopEngine);
   btnPanic.addEventListener('click', panic);
+  btnRec.addEventListener('click', startRecording);
+  btnRecStop.addEventListener('click', stopRecording);
   btnArm.addEventListener('click', ()=>{
     armed = true;
     statusEl.textContent = 'Channels armed. Adjust and enjoy.';

@@ -75,6 +75,15 @@ body{ margin:0; background:var(--bg); color:var(--ink); font-family: ui-sans-ser
 button:disabled{ opacity:.6; cursor:not-allowed; }
 #libState.ready{ color:var(--good); font-weight:700; }
 
+/* Recording */
+.rec-row{ display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.rec-dot{ display:inline-block; width:12px; height:12px; border-radius:50%; background:#5a2222; border:1px solid #3a1111; }
+.rec-dot.active{ background:#e03030; box-shadow:0 0 8px #e03030aa; animation: rec-pulse 1s ease-in-out infinite; }
+@keyframes rec-pulse{ 0%,100%{ opacity:1; } 50%{ opacity:.4; } }
+.rec-timer{ font-family:monospace; font-size:16px; color:var(--ink); font-variant-numeric:tabular-nums; }
+.rec-btn{ background:linear-gradient(#5a2828,#3a1818); border-color:#2a0f0f; }
+.rec-btn:hover:not(:disabled){ filter:brightness(1.2); }
+
 /* Decorative: hazard strip headers */
 .card::before{ content:''; display:block; height:6px; margin:-10px -10px 8px; background:
   repeating-linear-gradient( -45deg, var(--accent) 0 12px, #000 12px 24px ); opacity:.35; }
